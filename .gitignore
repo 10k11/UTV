@@ -1,0 +1,20 @@
+# Build output
+build/
+release/
+*.apk
+*.idsig
+*.dex
+*.class
+
+# Signing keys - never commit
+keystore/
+*.jks
+*.keystore
+*.properties
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
