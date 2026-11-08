@@ -3,13 +3,7 @@
 A tiny (**~66 KB APK**) text viewer and editor for Android 
 
 
-**Dark Mode**
-
-<img src="images/1-home-dark.png" width="240"> <img src="images/2-file-menu-dark.png" width="240">
-
-**Light Mode**
-
-<img src="images/1-home-light.png" width="240"> <img src="images/2-file-menu-light.png" width="240">
+<img src="images/banner-dark.png" alt="UTV banner">
 
 ## Features
 
