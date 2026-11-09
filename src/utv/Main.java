@@ -1298,14 +1298,17 @@ public final class Main extends Activity {
 
     /** Display layout: tabs -> 4 spaces, line start index. Input uses '\n' line endings. */
     static final class Text {
-        static final Text EMPTY = new Text(new char[0], 0, new int[]{0, 0}, 1, 0);
+        static final Text EMPTY = new Text(new char[0], 0, new int[]{0, 0}, 1, 0, "", false);
         final char[] c;
         final int len;
         final int[] ls;
         final int lines, maxCols;
+        private final String raw;       // the text as given, with its tabs
+        private final boolean hasTabs;
 
-        Text(char[] c, int len, int[] ls, int lines, int maxCols) {
+        Text(char[] c, int len, int[] ls, int lines, int maxCols, String raw, boolean hasTabs) {
             this.c = c; this.len = len; this.ls = ls; this.lines = lines; this.maxCols = maxCols;
+            this.raw = raw; this.hasTabs = hasTabs;
         }
 
         static Text of(String s) {
@@ -1335,7 +1338,27 @@ public final class Main extends Activity {
                 }
             }
             if (col > max) max = col;
-            return new Text(out, o, ls, line + 1, max);
+            return new Text(out, o, ls, line + 1, max, s, tabs > 0);
+        }
+
+        /** The original text behind display range [a, b): tabs come back as tabs. A tab the range only
+         *  partly covers is included whole. */
+        String slice(int a, int b) {
+            if (!hasTabs) return new String(c, a, b - a);
+            int line = lineOf(a), r = 0;
+            for (int i = 0; i < line; i++) r = raw.indexOf('\n', r) + 1;
+            StringBuilder sb = new StringBuilder(b - a);
+            int o = ls[line], col = 0;
+            for (; r < raw.length() && o < b; r++) {
+                char ch = raw.charAt(r);
+                int w = 1;
+                if (ch == '\n') col = 0;
+                else if (ch == '\t') { w = 4 - (col & 3); col += w; }
+                else col++;
+                if (o + w > a) sb.append(ch);
+                o += w;
+            }
+            return sb.toString();
         }
 
         int lineEnd(int i) { return i + 1 < lines ? ls[i + 1] - 1 : len; }
@@ -1614,7 +1637,7 @@ public final class Main extends Activity {
         private void copySel() {
             if (selB <= selA) return;
             android.content.ClipboardManager cb = (android.content.ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-            cb.setPrimaryClip(android.content.ClipData.newPlainText("text", new String(t.c, selA, selB - selA)));
+            cb.setPrimaryClip(android.content.ClipData.newPlainText("text", t.slice(selA, selB)));
             if (Build.VERSION.SDK_INT < 33) Toast.makeText(getContext(), "Copied", Toast.LENGTH_SHORT).show();
         }
 
