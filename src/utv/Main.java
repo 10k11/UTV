@@ -1421,7 +1421,10 @@ public final class Main extends Activity {
                 lower = new char[t.len];
                 for (int i = 0; i < t.len; i++) lower[i] = Character.toLowerCase(t.c[i]);
             }
-            char[] p = q.toLowerCase().toCharArray();
+            // same per-char folding as `lower`, so the query matches in every locale (String.toLowerCase()
+            // follows the device language: "I" becomes dotless "ı" in Turkish) and keeps length qlen
+            char[] p = new char[qlen];
+            for (int k = 0; k < qlen; k++) p[k] = Character.toLowerCase(q.charAt(k));
             char first = p[0];
             int end = t.len - qlen;
             outer:
