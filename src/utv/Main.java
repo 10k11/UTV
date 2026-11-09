@@ -1021,7 +1021,13 @@ public final class Main extends Activity {
             final int size = data != null ? data.length : 0;
             runOnUiThread(() -> {
                 if (seq != loadSeq) return;
-                if (ft == null) { title.setText(fn); meta.setText(fe); return; }
+                if (ft == null) {
+                    // nothing is open any more: don't leave the previous file's uri/text behind for edit and save to act on
+                    uri = null; name = null; src = "";
+                    if (fromIntent) { title.setText(fn); meta.setText(fe); }
+                    else { showViewer(false); toast("Couldn't open " + fn + ": " + fe); }
+                    return;
+                }
                 uri = u;
                 enc = info[0];
                 crlf = info[1] != 0;
