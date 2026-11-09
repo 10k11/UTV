@@ -44,7 +44,10 @@ import android.widget.Toast;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
@@ -83,7 +86,7 @@ public final class Main extends Activity {
     // current document (in memory only, forgotten on exit)
     private Uri uri;
     private String name, src = "";   // src: content with '\n' line endings, used when not editing
-    private int enc, bytes;          // 0 utf8, 1 utf8+bom, 2 utf16le, 3 utf16be
+    private int enc, bytes;          // 0 utf8, 1 utf8+bom, 2 utf16le, 3 utf16be, 4 windows-1252, 5 iso-8859-1
     private boolean crlf;
     private Runnable afterSaveAs;
 
@@ -793,17 +796,41 @@ public final class Main extends Activity {
 
     // ---------- save ----------
 
-    private byte[] encode(String s) {
+    private static Charset charset(int e) {
+        switch (e) {
+            case 2: return StandardCharsets.UTF_16LE;
+            case 3: return StandardCharsets.UTF_16BE;
+            case 4: return Charset.forName("windows-1252");
+            case 5: return StandardCharsets.ISO_8859_1;
+            default: return StandardCharsets.UTF_8;
+        }
+    }
+
+    /** The encoding s can actually be written in: legacy 8-bit files move to UTF-8 once they hold text they can't store. */
+    private int effectiveEnc(String s) {
+        return enc < 4 || charset(enc).newEncoder().canEncode(s) ? enc : 0;
+    }
+
+    private byte[] encode(String s) { return encode(s, effectiveEnc(s)); }
+
+    private byte[] encode(String s, int e) {
         if (crlf) s = s.replace("\n", "\r\n");
-        Charset cs = enc == 2 ? StandardCharsets.UTF_16LE : enc == 3 ? StandardCharsets.UTF_16BE : StandardCharsets.UTF_8;
-        byte[] body = s.getBytes(cs);
-        byte[] bom = enc == 1 ? new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}
-                : enc == 2 ? new byte[]{(byte) 0xFF, (byte) 0xFE} : enc == 3 ? new byte[]{(byte) 0xFE, (byte) 0xFF} : new byte[0];
+        byte[] body = s.getBytes(charset(e));
+        byte[] bom = e == 1 ? new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}
+                : e == 2 ? new byte[]{(byte) 0xFF, (byte) 0xFE} : e == 3 ? new byte[]{(byte) 0xFE, (byte) 0xFF} : new byte[0];
         if (bom.length == 0) return body;
         byte[] out = new byte[bom.length + body.length];
         System.arraycopy(bom, 0, out, 0, bom.length);
         System.arraycopy(body, 0, out, bom.length, body.length);
         return out;
+    }
+
+    /** Adopts the encoding a successful save used; returns true if it differs from the file's previous one. */
+    private boolean adoptEnc(int e) {
+        if (e == enc) return false;
+        enc = e;
+        updateMeta();
+        return true;
     }
 
     private boolean write(Uri u, byte[] data) {
@@ -829,12 +856,13 @@ public final class Main extends Activity {
     private void save(Runnable after) {
         if (uri == null) { saveAs(after); return; }
         String s = current();
-        byte[] data = encode(s);
+        int e = effectiveEnc(s);
+        byte[] data = encode(s, e);
         if (write(uri, data)) {
             if (!editing) src = s;
             bytes = data.length;
             setDirty(false);
-            toast("Saved");
+            toast(adoptEnc(e) ? "Saved as UTF-8 (text no longer fits the original encoding)" : "Saved");
             if (after != null) after.run();
         } else {
             toast("No permission to write here — choose where to save");
@@ -910,8 +938,11 @@ public final class Main extends Activity {
             fromIntent = false;
             load(u);
         } else if (req == REQ_SAVE_AS) {
-            byte[] d = encode(current());
+            String cur = current();
+            int e = effectiveEnc(cur);
+            byte[] d = encode(cur, e);
             if (write(u, d)) {
+                boolean widened = adoptEnc(e);
                 uri = u;
                 name = nameOf(u);
                 bytes = d.length;
@@ -924,7 +955,7 @@ public final class Main extends Activity {
                     try { del = DocumentsContract.deleteDocument(getContentResolver(), renameFrom); } catch (Exception ignored) {}
                     toast(del ? "Renamed to " + name : "Saved as " + name + " (old file couldn't be removed)");
                     renameFrom = null;
-                } else toast("Saved");
+                } else toast(widened ? "Saved as UTF-8 (text no longer fits the original encoding)" : "Saved");
                 Runnable r = afterSaveAs;
                 afterSaveAs = null;
                 if (r != null) r.run();
@@ -1011,7 +1042,7 @@ public final class Main extends Activity {
 
     private void updateMeta() {
         if (name == null) return;
-        String e = enc == 2 ? "UTF-16LE" : enc == 3 ? "UTF-16BE" : "UTF-8";
+        String e = enc == 2 ? "UTF-16LE" : enc == 3 ? "UTF-16BE" : enc == 4 ? "Windows-1252" : enc == 5 ? "ISO-8859-1" : "UTF-8";
         String m = editing ? "EDIT MODE" : String.format(Locale.US, "READ ONLY · %,d lines · %s", doc.lineCount(), human(bytes));
         meta.setText(m + " · " + e + (crlf ? " · CRLF" : "") + (dirty ? " · Modified" : ""));
     }
@@ -1032,18 +1063,38 @@ public final class Main extends Activity {
         return s != null ? s : u.toString();
     }
 
-    /** Decodes bytes; info[0] = encoding, info[1] = 1 if CRLF. Returns text with '\n' line endings. */
+    /** Decodes bytes; info[0] = encoding, info[1] = 1 if CRLF. Returns text with '\n' line endings.
+     *  Bytes that aren't valid UTF-8 are read as a legacy 8-bit encoding so saving writes the same bytes back. */
     static String decode(byte[] b, int[] info) {
         int n = b.length;
         String s;
         if (n >= 2 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xFE) { info[0] = 2; s = new String(b, 2, n - 2, StandardCharsets.UTF_16LE); }
         else if (n >= 2 && (b[0] & 0xFF) == 0xFE && (b[1] & 0xFF) == 0xFF) { info[0] = 3; s = new String(b, 2, n - 2, StandardCharsets.UTF_16BE); }
         else if (n >= 3 && (b[0] & 0xFF) == 0xEF && (b[1] & 0xFF) == 0xBB && (b[2] & 0xFF) == 0xBF) { info[0] = 1; s = new String(b, 3, n - 3, StandardCharsets.UTF_8); }
-        else { info[0] = 0; s = new String(b, StandardCharsets.UTF_8); }
+        else {
+            info[0] = 0;
+            s = strictUtf8(b);
+            if (s == null) {
+                Charset w = charset(4);
+                s = new String(b, w);
+                info[0] = 4;
+                // windows-1252 leaves a few bytes undefined; ISO-8859-1 maps all 256, so it always round-trips
+                if (!java.util.Arrays.equals(s.getBytes(w), b)) { s = new String(b, StandardCharsets.ISO_8859_1); info[0] = 5; }
+            }
+        }
         int cr = s.indexOf('\r');
         if (cr < 0) return s;
         info[1] = cr + 1 < s.length() && s.charAt(cr + 1) == '\n' ? 1 : 0;
         return s.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    /** UTF-8 text, or null if the bytes aren't valid UTF-8. */
+    private static String strictUtf8(byte[] b) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(b)).toString();
+        } catch (CharacterCodingException e) { return null; }
     }
 
     /** Edit mode: plain EditText, no wrapping, line-number gutter drawn on the left. */
